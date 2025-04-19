@@ -4,13 +4,11 @@ Tests for WebSocket client.
 @author Bruno Santos
 """
 
-import os
 import json
-import asyncio
 import pytest
 import websockets
-from unittest.mock import MagicMock, patch
 
+from unittest.mock import MagicMock, patch
 from src.websocket.client import WhatsAppGatewayClient
 
 # Setup test fixtures

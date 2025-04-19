@@ -77,7 +77,7 @@ This diagram shows:
 
    ```bash
    cd whatsapp-gateway
-   npm install
+   npm install --save-dev jest ts-jest @types/jest
    cp .env.example .env  # Edit with your configuration (e.g., ports, paths)
    npm run build
    ```

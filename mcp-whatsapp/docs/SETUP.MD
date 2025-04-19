@@ -35,7 +35,7 @@ cd whatsapp-gateway
 Install dependencies:
 
 ```bash
-npm install
+npm install --save-dev jest ts-jest @types/jest
 ```
 
 Create a configuration file:

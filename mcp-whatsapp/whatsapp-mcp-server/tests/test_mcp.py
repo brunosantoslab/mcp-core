@@ -4,14 +4,10 @@ Tests for MCP handler.
 @author Bruno Santos
 """
 
-import os
-import json
-import asyncio
 import pytest
 from unittest.mock import MagicMock, patch
 from fastapi import WebSocket
 
-from src.mcp.handler import MCPHandler
 from src.websocket.client import WhatsAppGatewayClient
 from src.models.cache import CacheManager
 
@@ -157,10 +153,7 @@ def mock_cache_manager():
     
     return cache
 
-@pytest.fixture
-def mcp_handler(mock_gateway_client, mock_cache_manager):
-    """Create a MCP handler for testing."""
-    return MCPHandler(mock_gateway_client, mock_cache_manager)
+
 
 @pytest.fixture
 def mock_websocket():

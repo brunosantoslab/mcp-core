@@ -3,14 +3,10 @@ Tests for cache manager.
 
 @author Bruno Santos
 """
-
-import os
-import json
 import asyncio
 import pytest
 import tempfile
 import shutil
-from pathlib import Path
 
 from src.models.cache import CacheManager
 
