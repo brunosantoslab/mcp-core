@@ -7,6 +7,7 @@ using FastMCP to simplify the MCP protocol.
 """
 import sys
 import signal
+import asyncio
 from mcp.server.fastmcp import FastMCP
 from typing import Dict, Any, List, Optional
 
@@ -32,19 +33,57 @@ gateway_client = WhatsAppGatewayClient(
 mcp = FastMCP("whatsapp")
 
 
+# Helper function to ensure connection
+async def ensure_connection() -> bool:
+    """Ensure connection to WhatsApp Gateway, reconnect if needed."""
+    if not gateway_client.is_connected():
+        logger.warning("Not connected to WhatsApp Gateway. Attempting to connect...")
+        try:
+            connection_success = await gateway_client.connect()
+            if gateway_client.is_connected():
+                logger.info("Successfully connected to WhatsApp Gateway")
+                return True
+            else:
+                logger.error("Failed to connect to WhatsApp Gateway despite successful connection call")
+                return False
+        except Exception as e:
+            logger.error(f"Error connecting to WhatsApp Gateway: {e}")
+            return False
+    return True
+
+
 @mcp.tool()
 async def startup():
     """Initialize services on startup."""
     logger.info("Initializing WhatsApp MCP Server...")
     
-    # Connect to WhatsApp Gateway
-    try:
-        await gateway_client.connect()
-        logger.info("Connected to WhatsApp Gateway")
-    except Exception as e:
-        logger.warning(f"Could not connect to WhatsApp Gateway: {e}. Will retry automatically.")
+    # Connect to WhatsApp Gateway with retry mechanism
+    connect_success = False
+    max_attempts = 5
+    
+    for attempt in range(1, max_attempts + 1):
+        try:
+            logger.info(f"Connecting to WhatsApp Gateway (attempt {attempt}/{max_attempts})...")
+            await gateway_client.connect()
+            
+            if gateway_client.is_connected():
+                connect_success = True
+                logger.info("Connected to WhatsApp Gateway successfully")
+                break
+            else:
+                logger.warning("Connection attempt completed but gateway not connected")
+                await asyncio.sleep(2)  # Short wait between attempts
+                
+        except Exception as e:
+            logger.warning(f"Could not connect to WhatsApp Gateway on attempt {attempt}: {e}")
+            await asyncio.sleep(2)  # Short wait between attempts
+    
+    if not connect_success:
+        logger.warning("Could not establish connection to WhatsApp Gateway during startup")
+        logger.info("Server will continue to run and retry connection in background")
     
     logger.info(f"WhatsApp MCP Server started")
+
 
 @mcp.tool()
 async def shutdown():
@@ -53,6 +92,7 @@ async def shutdown():
     await gateway_client.disconnect()
     await cache_manager.close()
     logger.info("WhatsApp MCP Server shutdown complete")
+
 
 # Tools for WhatsApp integration
 
@@ -81,6 +121,11 @@ async def get_contacts(query: Optional[str] = None) -> List[Dict[str, Any]]:
             
             return cached_contacts
         
+        # Ensure connection to Gateway
+        if not await ensure_connection():
+            logger.error("Failed to connect to WhatsApp Gateway. Cannot get contacts.")
+            return []
+        
         # Get contacts from WhatsApp Gateway
         response = await gateway_client.send_command("getContacts")
         
@@ -105,6 +150,7 @@ async def get_contacts(query: Optional[str] = None) -> List[Dict[str, Any]]:
     except Exception as e:
         logger.exception(f"Error getting contacts: {e}")
         return []
+
 
 @mcp.tool()
 async def get_chats(query: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -131,6 +177,11 @@ async def get_chats(query: Optional[str] = None) -> List[Dict[str, Any]]:
             
             return cached_chats
         
+        # Ensure connection to Gateway
+        if not await ensure_connection():
+            logger.error("Failed to connect to WhatsApp Gateway. Cannot get chats.")
+            return []
+        
         # Get chats from WhatsApp Gateway
         response = await gateway_client.send_command("getChats")
         
@@ -155,6 +206,7 @@ async def get_chats(query: Optional[str] = None) -> List[Dict[str, Any]]:
     except Exception as e:
         logger.exception(f"Error getting chats: {e}")
         return []
+
 
 @mcp.tool()
 async def get_chat_messages(
@@ -191,6 +243,11 @@ async def get_chat_messages(
             
             return cached_messages[:limit]
         
+        # Ensure connection to Gateway
+        if not await ensure_connection():
+            logger.error("Failed to connect to WhatsApp Gateway. Cannot get chat messages.")
+            return []
+        
         # Get messages from WhatsApp Gateway
         response = await gateway_client.send_command(
             "getChatMessages",
@@ -219,6 +276,7 @@ async def get_chat_messages(
         logger.exception(f"Error getting chat messages: {e}")
         return []
 
+
 @mcp.tool()
 async def send_message(
     chat_id: str,
@@ -234,6 +292,11 @@ async def send_message(
         if not chat_id or not content:
             logger.error("Missing chat_id or content")
             return {"success": False, "error": "Missing chat_id or content"}
+        
+        # Ensure connection to Gateway
+        if not await ensure_connection():
+            logger.error("Failed to connect to WhatsApp Gateway. Cannot send message.")
+            return {"success": False, "error": "Failed to connect to WhatsApp Gateway"}
         
         # Send message to WhatsApp Gateway
         response = await gateway_client.send_command(
@@ -255,6 +318,7 @@ async def send_message(
     except Exception as e:
         logger.exception(f"Error sending message: {e}")
         return {"success": False, "error": str(e)}
+
 
 @mcp.tool()
 async def send_media(
@@ -278,32 +342,77 @@ async def send_media(
             logger.error("Missing required parameters")
             return {"success": False, "error": "Missing required parameters"}
         
-        # Send media to WhatsApp Gateway
-        response = await gateway_client.send_command(
-            "sendMedia",
-            {
-                "chatId": chat_id,
-                "media": media,
-                "filename": filename,
-                "caption": caption,
-                "mediaType": media_type
-            }
-        )
+        # Ensure connection to Gateway
+        if not await ensure_connection():
+            logger.error("[MEDIA] Failed to connect to WhatsApp Gateway. Cannot send media.")
+            return {"success": False, "error": "Failed to connect to WhatsApp Gateway"}
         
-        if "data" in response and "message" in response["data"]:
-            sent_message = response["data"]["message"]
-            
-            # Add to cache
-            chat_id = sent_message.get("chatId")
-            if chat_id:
-                await cache_manager.add_chat_message(chat_id, sent_message)
-            
-            return {"success": True, "message": sent_message}
+        # Calculate media size
+        media_size_kb = len(media) / 1024
+        logger.info(f"[MEDIA] Sending media to chat {chat_id}: filename={filename}, size={media_size_kb:.2f}KB, type={media_type}")
         
-        return {"success": False, "error": "Failed to send media"}
+        # Size verification
+        MAX_SIZE_KB = 5000  # 5MB in Base64
+        if media_size_kb > MAX_SIZE_KB:
+            logger.warning(f"[MEDIA] Large media being sent: {media_size_kb:.2f}KB. May cause timeout issues.")
+        
+        # Validate media type
+        valid_types = ["image", "video", "audio", "document"]
+        if media_type and media_type not in valid_types:
+            logger.warning(f"[MEDIA] Potentially invalid media type: {media_type}")
+        
+        # Calculate appropriate timeout based on media size (min 2 minutes, max 10 minutes)
+        dynamic_timeout = min(600, max(120, int(media_size_kb / 10)))
+        logger.info(f"[MEDIA] Using timeout of {dynamic_timeout} seconds for media send")
+        
+        logger.info(f"[MEDIA] Calling gateway sendMedia command")
+        
+        # Send media to WhatsApp Gateway with dynamic timeout
+        try:
+            response = await gateway_client.send_command(
+                "sendMedia",
+                {
+                    "chatId": chat_id,
+                    "media": media,
+                    "filename": filename,
+                    "caption": caption,
+                    "mediaType": media_type
+                },
+                timeout=dynamic_timeout
+            )
+            
+            logger.info(f"[MEDIA] Gateway response received: success={response.get('success', False)}")
+            
+            if "error" in response:
+                logger.error(f"[MEDIA] Gateway error: {response['error']}")
+                return {"success": False, "error": response["error"]}
+            
+            if "data" in response and "message" in response["data"]:
+                sent_message = response["data"]["message"]
+                
+                # Add to cache
+                chat_id = sent_message.get("chatId")
+                if chat_id:
+                    await cache_manager.add_chat_message(chat_id, sent_message)
+                
+                logger.info(f"[MEDIA] Media successfully sent and cached")
+                return {"success": True, "message": sent_message}
+            
+            logger.error(f"[MEDIA] Unexpected response format: {response}")
+            return {"success": False, "error": "Failed to send media: Unexpected response format"}
+        
+        except asyncio.TimeoutError:
+            logger.error(f"[MEDIA] Operation timed out after {dynamic_timeout} seconds")
+            return {"success": False, "error": f"Media send operation timed out after {dynamic_timeout} seconds"}
+        
+        except Exception as cmd_error:
+            logger.error(f"[MEDIA] Error during gateway command: {cmd_error}")
+            return {"success": False, "error": f"Error communicating with Gateway: {str(cmd_error)}"}
+        
     except Exception as e:
-        logger.exception(f"Error sending media: {e}")
+        logger.exception(f"[MEDIA] Unhandled exception in send_media: {e}")
         return {"success": False, "error": str(e)}
+
 
 @mcp.tool()
 async def search_messages(
@@ -321,6 +430,11 @@ async def search_messages(
     try:
         if not query:
             logger.error("No query provided")
+            return []
+        
+        # Ensure connection to Gateway
+        if not await ensure_connection():
+            logger.error("Failed to connect to WhatsApp Gateway. Cannot search messages.")
             return []
         
         query = query.lower()
@@ -348,6 +462,7 @@ async def search_messages(
         logger.exception(f"Error searching messages: {e}")
         return []
 
+
 def main():
     """Entry point for the application."""
     # Setup signal handlers
@@ -360,6 +475,7 @@ def main():
     
     # Run the MCP server
     logger.info("Starting WhatsApp MCP Server...")
+
 
 if __name__ == "__main__":
     mcp.run(transport='stdio')

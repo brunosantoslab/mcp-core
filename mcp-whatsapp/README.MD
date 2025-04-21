@@ -7,10 +7,11 @@ MCP WhatsApp is a bridge between Claude Desktop and WhatsApp, enabling interacti
 - **WhatsApp Integration**: Connect to WhatsApp using QR code authentication
 - **Contact Management**: List and search your WhatsApp contacts
 - **Group Management**: List and interact with your WhatsApp groups
-- **Messaging**: Send and receive text and media messages
-- **Media Support**: Handle images, videos, documents, and audio
+- **Messaging**: Send and receive text messages
 - **Message History**: Access and search chat history
 - **Local Caching**: Store data locally for improved performance
+
+- Media Messages and Media Support (Handle images, videos, documents, and audio) will be available in future versions
 
 ## 🏗️ Architecture
 

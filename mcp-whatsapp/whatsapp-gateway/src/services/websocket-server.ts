@@ -254,9 +254,7 @@ export class WebSocketServer {
     }
   }
   
-  /**
-   * Handle the sendMedia command
-   */
+
   private async handleSendMedia(ws: WebSocket, message: GatewayCommandMessage): Promise<void> {
     try {
       if (!message.data || !message.data.chatId || !message.data.media || !message.data.filename) {
@@ -264,25 +262,99 @@ export class WebSocketServer {
       }
       
       const chatId = message.data.chatId as string;
-      const mediaBase64 = message.data.media as string;
+      let mediaBase64 = message.data.media as string;
       const filename = message.data.filename as string;
       const caption = message.data.caption as string | undefined;
       const mediaType = message.data.mediaType as any;
       
+      // Handle data URLs (e.g., from Claude or browser)
+      if (mediaBase64.startsWith('data:')) {
+        const parts = mediaBase64.split(',');
+        if (parts.length > 1) {
+          mediaBase64 = parts[1];
+          logger.info('Removed data URL prefix from media string');
+        }
+      }
+      
       const mediaBuffer = Buffer.from(mediaBase64, 'base64');
-      
-      const sentMessage = await this.whatsAppClient.sendMedia(
+
+      logger.info('Preparing to send media', { 
         chatId, 
-        mediaBuffer, 
-        filename, 
-        caption, 
-        mediaType
-      );
+        filename,
+        mediaType,
+        bufferSize: mediaBuffer.length,
+        hasCaption: !!caption
+      });
+
+      try {
+        const sentMessage = await this.whatsAppClient.sendMedia(
+          chatId, 
+          mediaBuffer, 
+          filename, 
+          caption, 
+          mediaType
+        );
+        
+        this.sendResponse(ws, message.id, 'sendMedia', { message: sentMessage });
+      } catch (innerError: unknown) {
+        const errorDetails = {
+          message: innerError instanceof Error ? innerError.message : String(innerError),
+          stack: innerError instanceof Error ? innerError.stack : undefined,
+          name: innerError instanceof Error ? innerError.name : undefined
+        };
+        
+        logger.error('WhatsApp client sendMedia failed', { 
+          error: innerError, 
+          errorDetails,
+          chatId
+        });
+        
+        // Special handling for the specific Puppeteer error
+        if (errorDetails.message?.includes('Evaluation failed: a')) {
+          logger.info('Detected specific Puppeteer error, attempting alternative approach');
+          
+          try {
+            // Try with document type and sendMediaAsDocument option
+            const sentMessage = await this.whatsAppClient.sendMediaAsDocument(
+              chatId, 
+              mediaBuffer, 
+              filename, 
+              caption
+            );
+            
+            logger.info('Successfully sent media using alternative approach');
+            this.sendResponse(ws, message.id, 'sendMedia', { message: sentMessage });
+            return;
+          } catch (altError: unknown) {
+            const altErrorDetails = {
+              message: altError instanceof Error ? altError.message : String(altError),
+              stack: altError instanceof Error ? altError.stack : undefined,
+              name: altError instanceof Error ? altError.name : undefined
+            };
+            
+            logger.error('Alternative approach also failed', { 
+              error: altError, 
+              errorDetails: altErrorDetails 
+            });
+            
+            // Continue with normal error response
+          }
+        }
+        
+        this.sendError(ws, `Failed to send media: ${errorDetails.message}`, message.id);
+      }
+    } catch (error: unknown) {
+      const errorDetails = {
+        message: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+        name: error instanceof Error ? error.name : undefined
+      };
       
-      this.sendResponse(ws, message.id, 'sendMedia', { message: sentMessage });
-    } catch (error) {
-      logger.error('Error handling sendMedia command', { error });
-      this.sendError(ws, 'Failed to send media', message.id);
+      logger.error('Error handling sendMedia command', { 
+        error, 
+        errorDetails
+      });
+      this.sendError(ws, 'Failed to process media command', message.id);
     }
   }
   

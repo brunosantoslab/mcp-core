@@ -5,7 +5,7 @@
     "module": "commonjs",
     "lib": ["es2020", "dom"],
     "outDir": "./dist",
-    "rootDir": ".", // Changed to include both src/ and tests/
+    "rootDir": "./src",
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
@@ -14,6 +14,6 @@
     "declaration": true,
     "sourceMap": true
   },
-  "include": ["src/**/*", "tests/**/*"], // Include test files
+  "include": ["src/**/*"],
   "exclude": ["node_modules", "dist"]
 }

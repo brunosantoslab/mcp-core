@@ -170,22 +170,202 @@ export class WhatsAppClient extends EventEmitter {
     mediaType?: MediaType
   ): Promise<ChatMessage> {
     try {
+      const baseTimeout = 30000; 
+      const timeoutMs = Math.max(baseTimeout, Math.min(300000, media.length / 10));
+      
+      logger.info(`Setting timeout of ${timeoutMs}ms based on media size of ${(media.length/1024).toFixed(2)}KB`);
+
+      if (!this.isReady) {
+        logger.error('WhatsApp client not ready when attempting to send media');
+        throw new Error('WhatsApp client is not ready');
+      }
+
+      // Automatically detect media type if not provided
+      if (!mediaType) {
+        const ext = filename.split('.').pop()?.toLowerCase() || '';
+        if (['jpg', 'jpeg', 'png', 'gif', 'webp'].includes(ext)) {
+          mediaType = 'image';
+          logger.info(`Auto-detected media type as 'image' based on extension: ${ext}`);
+        } else if (['mp4', 'avi', 'mov', 'webm'].includes(ext)) {
+          mediaType = 'video';
+          logger.info(`Auto-detected media type as 'video' based on extension: ${ext}`);
+        } else if (['mp3', 'wav', 'ogg', 'aac'].includes(ext)) {
+          mediaType = 'audio';
+          logger.info(`Auto-detected media type as 'audio' based on extension: ${ext}`);
+        } else {
+          mediaType = 'document';
+          logger.info(`Auto-detected media type as 'document' based on extension: ${ext}`);
+        }
+      }
+  
+      const mime = this.getMimeType(filename, mediaType);
+      const ext = filename.split('.').pop()?.toLowerCase() || '';
+      
+      logger.info('Media preparation details', { 
+        mime, 
+        mediaType, 
+        filename,
+        extension: ext,
+        mediaSizeBytes: media.length
+      });
+      
+      if (media.length < 100) {
+        logger.error('Media buffer too small - likely corrupted or empty', { 
+          size: media.length,
+          filename
+        });
+        throw new Error('Media file appears to be corrupted or empty (buffer too small)');
+      }
+      
+      const MAX_SIZE = 16 * 1024 * 1024;
+      if (media.length > MAX_SIZE) {
+        logger.error('Media exceeds WhatsApp size limit', { 
+          size: media.length,
+          maxSize: MAX_SIZE,
+          filename
+        });
+        throw new Error(`Media exceeds WhatsApp size limit (16MB). Current size: ${(media.length / (1024 * 1024)).toFixed(2)}MB`);
+      }
+      
+      if (mediaType === 'image' && !['jpg', 'jpeg', 'png', 'gif', 'webp'].includes(ext)) {
+        logger.warn('Possible mismatch between image mediaType and file extension', {
+          mediaType,
+          extension: ext,
+          mime
+        });
+      }
+      
+      const mediaBase64 = media.toString('base64');
+      const messageMedia = new MessageMedia(mime, mediaBase64, filename);
+
+      logger.info(`Attempting to get chat with ID: ${chatId}`);
+      const chat = await this.client.getChatById(chatId);
+      
+      logger.info('Sending media message', { 
+        chatId, 
+        hasCaption: !!caption,
+        mimeType: mime
+      });
+      
+      try {
+        const sentMessage = await this.timeoutPromise(
+          chat.sendMessage(messageMedia, { caption }),
+          timeoutMs,
+          `Sending media timed out after ${timeoutMs/1000} seconds`
+        );
+
+        logger.info('Media message sent successfully');
+        
+        const chatMessage = this.convertMessageToChatMessage(sentMessage);
+        this.messageCache.set(chatMessage.id, chatMessage);
+        
+        return chatMessage;
+      } catch (sendError) {
+        logger.error('First attempt to send media failed', {
+          error: sendError,
+          errorMessage: sendError instanceof Error ? sendError.message : String(sendError),
+          chatId,
+          mime
+        });
+        
+        if (mediaType === 'image') {
+          logger.info('Attempting to send image as document instead');
+          try {
+            const docMedia = new MessageMedia('application/octet-stream', mediaBase64, filename);
+            const sentMessage = await chat.sendMessage(docMedia, { 
+              caption, 
+              sendMediaAsDocument: true 
+            });
+            
+            logger.info('Successfully sent media as document');
+            const chatMessage = this.convertMessageToChatMessage(sentMessage);
+            this.messageCache.set(chatMessage.id, chatMessage);
+            
+            return chatMessage;
+          } catch (docError) {
+            logger.error('Failed to send media as document too', {
+              error: docError,
+              errorMessage: docError instanceof Error ? docError.message : String(docError)
+            });
+            throw sendError;
+          }
+        }
+        
+        throw sendError;
+      }
+    } catch (error) {
+      const errorDetails = {
+        message: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+        name: error instanceof Error ? error.name : undefined
+      };
+      
+      logger.error('Failed to send media', { 
+        error, 
+        errorDetails,
+        chatId,
+        filename
+      });
+      
+      throw error;
+    }
+  }
+
+  /**
+   * Send media as document (alternative method for problematic media)
+   */
+  public async sendMediaAsDocument(
+    chatId: string, 
+    media: Buffer, 
+    filename: string, 
+    caption?: string
+  ): Promise<ChatMessage> {
+    try {
       if (!this.isReady) {
         throw new Error('WhatsApp client is not ready');
       }
       
-      const mime = this.getMimeType(filename, mediaType);
-      const messageMedia = new MessageMedia(mime, media.toString('base64'), filename);
+      logger.info('Attempting to send media as document with alternative method', {
+        chatId,
+        filename,
+        mediaSize: media.length
+      });
+      
+      // Special handling for problematic media
+      // Use generic MIME type to avoid Puppeteer issues
+      const docMedia = new MessageMedia('application/octet-stream', media.toString('base64'), filename);
       
       const chat = await this.client.getChatById(chatId);
-      const sentMessage = await chat.sendMessage(messageMedia, { caption });
       
+      // Send with explicit document option
+      const sentMessage = await this.timeoutPromise(
+        chat.sendMessage(docMedia, { 
+          caption, 
+          sendMediaAsDocument: true 
+        }),
+        60000, // 1 minute timeout
+        'Sending media as document timed out'
+      );
+      
+      logger.info('Successfully sent media as document with alternative method');
       const chatMessage = this.convertMessageToChatMessage(sentMessage);
       this.messageCache.set(chatMessage.id, chatMessage);
       
       return chatMessage;
     } catch (error) {
-      logger.error('Failed to send media', { error, chatId });
+      const errorDetails = {
+        message: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+        name: error instanceof Error ? error.name : undefined
+      };
+      
+      logger.error('Failed to send media as document with alternative method', { 
+        error, 
+        errorDetails,
+        chatId,
+        filename
+      });
+      
       throw error;
     }
   }
@@ -263,34 +443,170 @@ export class WhatsAppClient extends EventEmitter {
    * Get MIME type based on filename and mediaType
    */
   private getMimeType(filename: string, mediaType?: MediaType): string {
+    // Get file extension
+    const ext = filename.split('.').pop()?.toLowerCase() || '';
+    
+    // If mediaType is provided, use it as a primary classifier
     if (mediaType) {
       switch (mediaType) {
-        case 'image': return 'image/jpeg';
-        case 'video': return 'video/mp4';
-        case 'audio': return 'audio/ogg';
-        case 'document': return 'application/pdf';
-        default: return 'application/octet-stream';
+        case 'image':
+          // Determine specific image type based on extension
+          switch (ext) {
+            case 'png': return 'image/png';
+            case 'gif': return 'image/gif';
+            case 'webp': return 'image/webp';
+            case 'svg': return 'image/svg+xml';
+            case 'bmp': return 'image/bmp';
+            case 'tiff':
+            case 'tif': return 'image/tiff';
+            case 'ico': return 'image/x-icon';
+            default: return 'image/jpeg'; // Default for jpg, jpeg, or unknown
+          }
+        
+        case 'video':
+          // Determine specific video type
+          switch (ext) {
+            case 'mp4': return 'video/mp4';
+            case 'webm': return 'video/webm';
+            case 'avi': return 'video/x-msvideo';
+            case 'wmv': return 'video/x-ms-wmv';
+            case 'flv': return 'video/x-flv';
+            case 'mov': return 'video/quicktime';
+            case '3gp': return 'video/3gpp';
+            case 'mkv': return 'video/x-matroska';
+            default: return 'video/mp4'; // Default
+          }
+        
+        case 'audio':
+          // Determine specific audio type
+          switch (ext) {
+            case 'mp3': return 'audio/mpeg';
+            case 'wav': return 'audio/wav';
+            case 'ogg': return 'audio/ogg';
+            case 'flac': return 'audio/flac';
+            case 'm4a': return 'audio/mp4';
+            case 'aac': return 'audio/aac';
+            case 'wma': return 'audio/x-ms-wma';
+            case 'opus': return 'audio/opus';
+            default: return 'audio/mpeg'; // Default
+          }
+        
+        case 'document':
+          // Default for document based on extension
+          switch (ext) {
+            case 'pdf': return 'application/pdf';
+            case 'doc':
+            case 'docx': return 'application/msword';
+            case 'xls':
+            case 'xlsx': return 'application/vnd.ms-excel';
+            case 'ppt':
+            case 'pptx': return 'application/vnd.ms-powerpoint';
+            case 'txt': return 'text/plain';
+            case 'rtf': return 'application/rtf';
+            case 'csv': return 'text/csv';
+            case 'xml': return 'application/xml';
+            case 'json': return 'application/json';
+            case 'zip': return 'application/zip';
+            case 'rar': return 'application/x-rar-compressed';
+            case '7z': return 'application/x-7z-compressed';
+            case 'tar': return 'application/x-tar';
+            case 'gz': 
+            case 'gzip': return 'application/gzip';
+            default: return 'application/octet-stream'; // Default for unknown
+          }
+        
+        default:
+          // If mediaType is unknown, fallback to extension-based detection
+          break;
       }
     }
     
-    const ext = filename.split('.').pop()?.toLowerCase();
+    // If we get here, either no mediaType was provided or it wasn't recognized
+    // Determine MIME type based on file extension
     switch (ext) {
+      // Images
       case 'jpg':
       case 'jpeg': return 'image/jpeg';
       case 'png': return 'image/png';
       case 'gif': return 'image/gif';
+      case 'webp': return 'image/webp';
+      case 'svg': return 'image/svg+xml';
+      case 'bmp': return 'image/bmp';
+      case 'tiff':
+      case 'tif': return 'image/tiff';
+      case 'ico': return 'image/x-icon';
+      
+      // Videos
       case 'mp4': return 'video/mp4';
+      case 'webm': return 'video/webm';
+      case 'avi': return 'video/x-msvideo';
+      case 'wmv': return 'video/x-ms-wmv';
+      case 'flv': return 'video/x-flv';
+      case 'mov': return 'video/quicktime';
+      case '3gp': return 'video/3gpp';
+      case 'mkv': return 'video/x-matroska';
+      
+      // Audio
       case 'mp3': return 'audio/mpeg';
+      case 'wav': return 'audio/wav';
       case 'ogg': return 'audio/ogg';
+      case 'flac': return 'audio/flac';
+      case 'm4a': return 'audio/mp4';
+      case 'aac': return 'audio/aac';
+      case 'wma': return 'audio/x-ms-wma';
+      case 'opus': return 'audio/opus';
+      
+      // Documents
       case 'pdf': return 'application/pdf';
-      case 'doc':
-      case 'docx': return 'application/msword';
-      case 'xls':
-      case 'xlsx': return 'application/vnd.ms-excel';
-      case 'ppt':
-      case 'pptx': return 'application/vnd.ms-powerpoint';
+      case 'doc': return 'application/msword';
+      case 'docx': return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+      case 'xls': return 'application/vnd.ms-excel';
+      case 'xlsx': return 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+      case 'ppt': return 'application/vnd.ms-powerpoint';
+      case 'pptx': return 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
       case 'txt': return 'text/plain';
-      default: return 'application/octet-stream';
+      case 'rtf': return 'application/rtf';
+      case 'csv': return 'text/csv';
+      case 'html': return 'text/html';
+      case 'css': return 'text/css';
+      case 'js': return 'application/javascript';
+      case 'xml': return 'application/xml';
+      case 'json': return 'application/json';
+      
+      // Archives
+      case 'zip': return 'application/zip';
+      case 'rar': return 'application/x-rar-compressed';
+      case '7z': return 'application/x-7z-compressed';
+      case 'tar': return 'application/x-tar';
+      case 'gz': return 'application/gzip';
+      
+      // Fonts
+      case 'ttf': return 'font/ttf';
+      case 'otf': return 'font/otf';
+      case 'woff': return 'font/woff';
+      case 'woff2': return 'font/woff2';
+      
+      // Other common types
+      case 'apk': return 'application/vnd.android.package-archive';
+      case 'exe': return 'application/x-msdownload';
+      case 'dll': return 'application/x-msdownload';
+      case 'iso': return 'application/x-iso9660-image';
+      case 'vcf': return 'text/vcard';
+      case 'ics': return 'text/calendar';
+      
+      // Default fallback for unknown types
+      default:
+        logger.warn(`Unknown file extension: ${ext}, defaulting to octet-stream`);
+        return 'application/octet-stream';
     }
+  }
+
+  private async timeoutPromise<T>(promise: Promise<T>, ms: number, errorMessage: string): Promise<T> {
+    return Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        setTimeout(() => reject(new Error(errorMessage)), ms);
+      })
+    ]);
   }
 }
