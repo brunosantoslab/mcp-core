@@ -128,22 +128,6 @@ See the Setup Guide for troubleshooting and log file locations.
 
 For detailed API documentation, refer to the API Documentation.
 
-## 🧪 Testing
-
-### WhatsApp Gateway:
-
-```bash
-cd whatsapp-gateway
-npm test
-```
-
-### MCP WhatsApp Server:
-
-```bash
-cd whatsapp-mcp-server
-pytest
-```
-
 ## 📚 Documentation
 
 - Architecture Overview
