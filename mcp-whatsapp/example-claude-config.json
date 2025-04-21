@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "whatsapp": {
+      "command": "python",
+      "args": [
+        "-m",
+        "src.server"
+      ],
+      "env": {
+        "PYTHONPATH": "C:\\Users\\user\\Documents\\mcp-core\\mcp-whatsapp\\whatsapp-mcp-server"
+      }
+    }
+  }
+}
